@@ -553,6 +553,22 @@ var generators = map[string]builtinDefinition{
 			volatility.Volatile,
 		),
 	),
+	"crdb_internal.show_all_grant_stmts": makeBuiltin(
+		tree.FunctionProperties{
+			Category:         builtinconstants.CategorySystemInfo,
+			DistsqlBlocklist: true, // applicable only on the gateway
+		},
+		makeGeneratorOverload(
+			tree.ParamTypes{
+				{Name: "database_name", Typ: types.String},
+			},
+			showAllGrantStmtsGeneratorType,
+			makeShowAllGrantStmtsGenerator,
+			`Returns rows of CREATE statements for all grants on objects in the specified database.
+The output can be used to recreate a database.`,
+			volatility.Volatile,
+		),
+	),
 	"crdb_internal.show_create_all_schemas": makeBuiltin(
 		tree.FunctionProperties{
 			Category:         builtinconstants.CategorySystemInfo,
@@ -2870,6 +2886,7 @@ func (p *payloadsForTraceGenerator) Close(_ context.Context) {
 	}
 }
 
+var showAllGrantStmtsGeneratorType = types.String
 var showCreateAllSchemasGeneratorType = types.String
 var showCreateAllTriggersGeneratorType = types.String
 var showCreateAllTypesGeneratorType = types.String
@@ -3280,6 +3297,70 @@ func makeShowCreateAllTypesGenerator(
 	}, nil
 }
 
+// showAllGrantStatements supports the execution of
+// crdb_internal.show_all_grant_stmts(dbName).
+type showAllGrantStatements struct {
+	evalPlanner eval.Planner
+	txn         *kv.Txn
+	dbName      string
+	acc         mon.BoundAccount
+	ids         []int64
+
+	// The following may be updated during the generator's lifecycle
+	// by calls to Next().
+	curr tree.Datum
+	idx  int
+}
+
+func (s *showAllGrantStatements) ResolvedType() *types.T {
+	return showAllGrantStmtsGeneratorType
+}
+
+// Start implements the eval.ValueGenerator interface.
+func (s *showAllGrantStatements) Start(ctx context.Context, txn *kv.Txn) error {
+	ids, err := getDescriptorIds(ctx, s.evalPlanner, txn, &s.acc) // TODO: Implement getGrantIDs
+	if err != nil {
+		return err
+	}
+	s.ids = ids
+	s.txn = txn
+	s.idx = -1
+	return nil
+}
+
+// Next implements the eval.ValueGenerator interface.
+func (s *showAllGrantStatements) Next(ctx context.Context) (bool, error) {
+	s.idx++
+	if s.idx >= len(s.ids) {
+		return false, nil
+	}
+
+	ownerStmt, grantStmts, err := getGrantCreateStatements(ctx, s.evalPlanner, s.txn, s.ids[s.idx]) // TODO: Implement getGrantCreateStatement
+	if err != nil {
+		return false, err
+	}
+	// Build a string that contains the owner statement and all the grant statements
+	stringBuilder := strings.Builder{}
+	ownerStmtStr := string(tree.MustBeDString(ownerStmt))
+	stringBuilder.WriteString(ownerStmtStr + ";\n")
+	for _, grantStmt := range grantStmts {
+		grantStmtStr := string(tree.MustBeDString(grantStmt))
+		stringBuilder.WriteString(grantStmtStr + ";\n")
+	}
+	s.curr = tree.NewDString(stringBuilder.String())
+	return true, nil
+}
+
+// Values implements the eval.ValueGenerator interface.
+func (s *showAllGrantStatements) Values() (tree.Datums, error) {
+	return tree.Datums{s.curr}, nil
+}
+
+// Close implements the eval.ValueGenerator interface.
+func (s *showAllGrantStatements) Close(ctx context.Context) {
+	s.acc.Close(ctx)
+}
+
 // ShowCreateAllRoutinesGenerator supports the execution of
 // crdb_internal.show_create_all_routines(dbName).
 type showCreateAllRoutinesGenerator struct {
@@ -3366,6 +3447,17 @@ func makeShowCreateAllRoutinesGenerator(
 ) (eval.ValueGenerator, error) {
 	dbName := string(tree.MustBeDString(args[0]))
 	return &showCreateAllRoutinesGenerator{
+		evalPlanner: evalCtx.Planner,
+		dbName:      dbName,
+		acc:         evalCtx.Planner.Mon().MakeBoundAccount(),
+	}, nil
+}
+
+func makeShowAllGrantStmtsGenerator(
+	ctx context.Context, evalCtx *eval.Context, args tree.Datums,
+) (eval.ValueGenerator, error) {
+	dbName := string(tree.MustBeDString(args[0]))
+	return &showAllGrantStatements{
 		evalPlanner: evalCtx.Planner,
 		dbName:      dbName,
 		acc:         evalCtx.Planner.Mon().MakeBoundAccount(),

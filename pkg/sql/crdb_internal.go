@@ -3796,6 +3796,32 @@ CREATE TABLE crdb_internal.create_procedure_statements (
 	},
 }
 
+func createGrantPopulate(
+	ctx context.Context, p *planner, db catalog.DatabaseDescriptor, addRow func(...tree.Datum) error,
+) error {
+	// First, get all the grants on the database and add the corresponding rows.
+	// Then, get all the grants on the schemas and add the corresponding rows.
+	// Then, get all the grants on the tables and add the corresponding rows.
+	// Then, get all grants on types and add the corresponding rows.
+	// Then, get all systemPrivileges and add the corresponding rows.
+	// Finally, get all the externalConnectionPrivileges and add the corresponding rows.
+	return nil
+}
+
+var crdbInternalCreateGrantStmtsTable = virtualSchemaTable{
+	comment: "CREATE statements for all grants",
+	schema: `
+CREATE TABLE crdb_internal.create_grant_statements (
+  database_name STRING,
+  schema_name STRING,
+  object_name STRING,
+  object_type STRING,
+  descriptor_id INT,
+  create_statement STRING
+)`,
+	populate: createGrantPopulate, //TODO: Implement createGrantPopulate
+}
+
 func createTriggerPopulate(
 	ctx context.Context, p *planner, db catalog.DatabaseDescriptor, addRow func(...tree.Datum) error,
 ) error {
